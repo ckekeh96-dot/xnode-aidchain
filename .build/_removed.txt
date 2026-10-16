@@ -1,0 +1,42 @@
+lines only in backup: 40
+
+-</script><div class="modal-backdrop" hidden="" id="chainReceiptModal"><div aria-labelledby="chainReceiptTitle" aria-modal="true" class="modal" role="dialog"><button aria-label="Close" class="modal-x"
+-const chainId='0xaa36a7'; // Ethereum Sepolia, chain ID 11155111
+-const SEPOLIA_RPC='https://ethereum-sepolia-rpc.publicnode.com';
+-const EXPLORER='https://sepolia.etherscan.io';
+-let ethersLib, provider, publicProvider, signer, escrow, token, busy=false, chainReady=false, receipts=[], audit=[];
+-function log(message,tx){const item=document.createElement('p');item.textContent=new Date().toLocaleTimeString()+' · '+message+' ';if(tx){const a=document.createElement('a');a.href=EXPLORER+'/tx/'+tx
+-function fail(e){log('Error: '+(e?.shortMessage||e?.reason||e?.message||String(e)).slice(0,260))}
+-async function getPublicProvider(){if(!publicProvider)publicProvider=new (await loadEthers()).JsonRpcProvider(SEPOLIA_RPC);return publicProvider}
+-    chip.className='tag blue';chip.textContent='* Blockchain mode · Sepolia · '+short(signer.getAddress());
+-    foot.textContent='* BLOCKCHAIN MODE';sub.textContent='Donations, approvals and releases on this page are sent to Ethereum Sepolia contracts you deployed. Valueless demo tokens only.';
+-    foot.textContent='● DEMO MODE';sub.textContent='Wallet detected on Sepolia. Validate deployed contract addresses before any transaction is sent.';
+-  if(!window.ethereum)throw Error('No injected wallet found. Install a browser wallet for Sepolia.');
+-  const net=await window.ethereum.request({method:'eth_chainId'});
+-  if(net.toLowerCase()!==chainId)throw Error('Switch your wallet to Ethereum Sepolia (chain 11155111), then reconnect.');
+-  setStatus('Connected to Sepolia: '+await signer.getAddress());updateChip();log('Wallet connected');
+-  if((await provider.getCode(e))==='0x'||(await provider.getCode(t))==='0x')throw Error('No deployed code at one or both addresses on Sepolia.');
+-  log('Contracts verified on Sepolia. Escrow '+short(e)+' · token '+short(t));
+-  await refresh();
+-}
+-async function ready(){if(!escrow||!token)await validate();if((await provider.getNetwork()).chainId!==11155111n)throw Error('Wrong network. Select Sepolia.')}
+-    gasUsed:receipt.gasUsed?.toString()??'',explorer:EXPLORER+'/tx/'+receipt.hash,
+-    note:'Valueless Sepolia demonstration token. The confirmed transaction is the payment proof.'
+-    +'<p class="small">Wallet: '+esc(r.wallet)+'<br/>Escrow: '+esc(r.escrowContract)+'<br/>Token: '+esc(r.tokenContract)+'</p>'
+-    +'<p class="small"><a href="'+esc(r.explorer)+'" target="_blank" rel="noopener noreferrer">Open this transaction on Sepolia Etherscan ↗</a></p>';
+-  $t('receiptList').innerHTML=receipts.map((r,i)=>'<div class="event"><span class="dot"></span><div><strong>'+esc(r.kind)+' · '+esc(r.amountDUSDC)+' dUSDC · project #'+esc(r.project)+'</strong><p>Blo
+-  const source=provider?'connected wallet provider':'public RPC ('+SEPOLIA_RPC.replace(/^https:\/\//,'')+')';
+-    $t('auditSummary').innerHTML='<p class="notice">Could not read events from this node: '+esc(String(err?.shortMessage||err?.message||err).slice(0,240))+'. This is a read failure, not evidence of z
+-  log('Audit sync complete: '+parsed.length+' event(s) scanned from block '+from);
+-    return '<tr><td>'+p.block+'<br><a class="small" href="'+EXPLORER+'/tx/'+p.tx+'" target="_blank" rel="noopener noreferrer">'+esc(p.tx.slice(0,12))+'…</a></td>'
+-  download(lines.join('\r\n'),'text/csv;charset=utf-8','aidchain-sepolia-audit-'+Date.now()+'.csv');
+-    $t('escrowAddress').value=p.escrow||'';$t('tokenAddress').value=p.token||'';
+-    if(p.from)$t('auditFrom').value=p.from;
+-    $t('deploymentSource').textContent='Addresses: restored from this browser (your last manual entry)';
+-    $t('escrowAddress').value=d.escrow||'';$t('tokenAddress').value=d.token||'';
+-    if(d.fromBlock)$t('auditFrom').value=String(d.fromBlock);
+-    $t('deploymentSource').textContent='Addresses: auto-loaded from deployments/sepolia.config.js'
+-      +(d.network?' · network '+d.network:'')+(d.escrowVerifiedOn?' · escrow verified on explorer '+d.escrowVerifiedOn:'');
+-  }else $t('deploymentSource').textContent='Addresses: none loaded — deploy with the Remix guide or paste your own';
+-  if(!p.exists)throw Error('Project does not exist on Sepolia.');
+-

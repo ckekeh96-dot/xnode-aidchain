@@ -1,0 +1,311 @@
+</script><div class="modal-backdrop" hidden="" id="chainReceiptModal"><div aria-labelledby="chainReceiptTitle" aria-modal="true" class="modal" role="dialog"><button aria-label="Close" class="modal-x" id="closeChainReceipt">×</button><div class="modal-icon">⬢</div><p class="modal-kicker">SEPOLIA TESTNET · CONFIRMED TRANSACTION</p><h2 id="chainReceiptTitle">On-chain receipt</h2><div id="chainReceiptSummary"></div><div class="banner">Issued only after the transaction was mined with status = success. The transaction hash is the payment proof; any supporting document is additional context, not proof of payment.</div><div class="modal-actions"><button class="btn ghost" id="chainReceiptAudit">View on-chain audit</button><button class="btn" id="downloadChainReceipt">↓ Save receipt JSON</button></div></div></div>
+<script src="deployments/sepolia.config.js"></script>
+<script type="module">
+// Optional online adapter: ethers is fetched only when a testnet control is used.
+const $t=id=>document.getElementById(id);
+const $=id=>document.getElementById(id);
+const chainId='0xaa36a7'; // Ethereum Sepolia, chain ID 11155111
+const SEPOLIA_RPC='https://ethereum-sepolia-rpc.publicnode.com';
+const EXPLORER='https://sepolia.etherscan.io';
+const UNITS=1000000n; // dUSDC uses 6 decimals
+const STORE='xnode_aidchain_chain_v1';
+const escrowABI=[
+ 'function token() view returns (address)',
+ 'function nextProjectId() view returns (uint256)',
+ 'function createProject(address reviewer,uint256 target,uint256[] allocations) returns (uint256)',
+ 'function donate(uint256 id,uint256 amount)',
+ 'function submitEvidence(uint256 id,uint256 milestoneId,bytes32 evidenceHash)',
+ 'function approveMilestone(uint256 id,uint256 milestoneId)',
+ 'function rejectMilestone(uint256 id,uint256 milestoneId)',
+ 'function releaseFunds(uint256 id,uint256 milestoneId)',
+ 'function refund(uint256 id,uint256 amount)',
+ 'function available(uint256 id) view returns (uint256)',
+ 'function refundable(uint256 id,address donor) view returns (uint256)',
+ 'function contributed(uint256 id,address donor) view returns (uint256)',
+ 'function refunded(uint256 id,address donor) view returns (uint256)',
+ 'function projects(uint256 id) view returns (address ngo,address reviewer,uint256 target,uint256 raised,uint256 released,uint256 refunded,uint256 milestoneCount,bool exists)',
+ 'function milestones(uint256 id,uint256 m) view returns (uint256 amount,bytes32 evidenceHash,bool submitted,bool rejected,bool approved,bool paid)',
+ 'function milestoneStatus(uint256 id,uint256 m) view returns (uint256 amount,bytes32 evidenceHash,string state)',
+ 'event ProjectCreated(uint256 indexed projectId,address indexed ngo,address indexed reviewer,uint256 target)',
+ 'event Donated(uint256 indexed projectId,address indexed donor,uint256 amount)',
+ 'event EvidenceSubmitted(uint256 indexed projectId,uint256 indexed milestoneId,bytes32 evidenceHash)',
+ 'event MilestoneApproved(uint256 indexed projectId,uint256 indexed milestoneId,address indexed reviewer)',
+ 'event MilestoneRejected(uint256 indexed projectId,uint256 indexed milestoneId,address indexed reviewer)',
+ 'event FundsReleased(uint256 indexed projectId,uint256 indexed milestoneId,address indexed ngo,uint256 amount)',
+ 'event Refunded(uint256 indexed projectId,address indexed donor,uint256 amount)'
+];
+const tokenABI=['function mint(address to,uint256 amount)','function approve(address spender,uint256 amount) returns (bool)','function allowance(address owner,address spender) view returns (uint256)','function decimals() view returns (uint8)','function symbol() view returns (string)','function balanceOf(address owner) view returns (uint256)'];
+let ethersLib, provider, publicProvider, signer, escrow, token, busy=false, chainReady=false, receipts=[], audit=[];
+
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const short=a=>String(a).slice(0,6)+'…'+String(a).slice(-4);
+const fmt=u=>(Number(u)/1e6).toLocaleString('en-US',{maximumFractionDigits:2});
+const fmtEth=w=>(Number(w)/1e18).toFixed(4);
+function log(message,tx){const item=document.createElement('p');item.textContent=new Date().toLocaleTimeString()+' · '+message+' ';if(tx){const a=document.createElement('a');a.href=EXPLORER+'/tx/'+tx;a.target='_blank';a.rel='noopener noreferrer';a.textContent=tx.slice(0,12)+'… (explorer)';item.append(a)}$t('chainLog').prepend(item)}
+function fail(e){log('Error: '+(e?.shortMessage||e?.reason||e?.message||String(e)).slice(0,260))}
+async function loadEthers(){if(!ethersLib){const m=await import('https://cdn.jsdelivr.net/npm/ethers@6.13.5/+esm');ethersLib=m.ethers||m}return ethersLib}
+async function getPublicProvider(){if(!publicProvider)publicProvider=new (await loadEthers()).JsonRpcProvider(SEPOLIA_RPC);return publicProvider}
+const escrowAddr=()=>$t('escrowAddress').value.trim();
+const tokenAddr=()=>$t('tokenAddress').value.trim();
+function setStatus(text){$t('walletStatus').textContent=text}
+
+function updateChip(){
+  const chip=$t('modeChip'),foot=$t('modeFoot'),sub=$t('modeFootSub');
+  if(chainReady&&signer){
+    chip.className='tag blue';chip.textContent='⬢ Blockchain mode · Sepolia · '+short(signer.getAddress());
+    foot.textContent='⬢ BLOCKCHAIN MODE';sub.textContent='Donations, approvals and releases on this page are sent to Ethereum Sepolia contracts you deployed. Valueless demo tokens only.';
+  }else if(signer){
+    chip.className='tag amber';chip.textContent='⬢ Wallet connected · contracts not validated';
+    foot.textContent='● DEMO MODE';sub.textContent='Wallet detected on Sepolia. Validate deployed contract addresses before any transaction is sent.';
+  }else{
+    chip.className='tag amber';chip.textContent='● Demo mode · offline simulation';
+    foot.textContent='● DEMO MODE';sub.textContent='Simulated USDC, transactions, and approval roles. No real blockchain connection or payments.';
+  }
+}
+
+async function connect(){
+  if(!window.ethereum)throw Error('No injected wallet found. Install a browser wallet for Sepolia.');
+  const E=await loadEthers();
+  await window.ethereum.request({method:'eth_requestAccounts'});
+  const net=await window.ethereum.request({method:'eth_chainId'});
+  if(net.toLowerCase()!==chainId)throw Error('Switch your wallet to Ethereum Sepolia (chain 11155111), then reconnect.');
+  provider=new E.BrowserProvider(window.ethereum);signer=await provider.getSigner();
+  setStatus('Connected to Sepolia: '+await signer.getAddress());updateChip();log('Wallet connected');
+  await refresh();
+}
+async function validate(){
+  if(!signer)await connect();
+  const E=await loadEthers();const e=escrowAddr(),t=tokenAddr();
+  if(!E.isAddress(e)||!E.isAddress(t))throw Error('Enter valid deployed escrow and demo token addresses.');
+  if((await provider.getCode(e))==='0x'||(await provider.getCode(t))==='0x')throw Error('No deployed code at one or both addresses on Sepolia.');
+  escrow=new E.Contract(e,escrowABI,signer);token=new E.Contract(t,tokenABI,signer);
+  if((await escrow.token()).toLowerCase()!==t.toLowerCase())throw Error('Escrow contract token does not match the supplied demo token.');
+  if(Number(await token.decimals())!==6)throw Error('Demo token must have 6 decimals.');
+  chainReady=true;updateChip();savePrefs();
+  log('Contracts verified on Sepolia. Escrow '+short(e)+' · token '+short(t));
+  await refresh();
+}
+async function ready(){if(!escrow||!token)await validate();if((await provider.getNetwork()).chainId!==11155111n)throw Error('Wrong network. Select Sepolia.')}
+
+// Each metric is read independently; an unreadable metric is named instead of showing a stale or blank value.
+async function refresh(){
+  if(!signer){setStatus('Wallet not connected');return}
+  const who=await signer.getAddress();const missing=[];
+  let gas='—',bal='—',allow='—',held='—',detail='';
+  try{gas=fmtEth(await provider.getBalance(who))+' ETH'}catch{missing.push('gas balance')}
+  if(chainReady){
+    try{bal=fmt(await token.balanceOf(who))}catch{missing.push('demo balance')}
+    try{allow=fmt(await token.allowance(who,escrowAddr()))+' approved'}catch{missing.push('allowance')}
+    try{
+      const id=projectId(),p=await escrow.projects(id);
+      if(!p.exists)throw Error('project not found');
+      held=fmt(await escrow.available(id));
+      detail='Project #'+id+' · target '+fmt(p.target)+' · raised '+fmt(p.raised)+' · released '+fmt(p.released)+' · refunded '+fmt(p.refunded)+' · '+Number(p.milestoneCount)+' milestone(s)';
+    }catch{missing.push('project state')}
+  }
+  $t('chainReadout').innerHTML='<div class="grid2">'
+    +'<div class="metric"><small>Wallet</small><strong>'+esc(short(who))+'</strong><em>gas '+esc(gas)+'</em></div>'
+    +'<div class="metric"><small>Demo balance</small><strong>'+esc(bal)+' dUSDC</strong><em>'+esc(allow)+'</em></div>'
+    +'<div class="metric"><small>Escrow holds</small><strong>'+esc(held)+' dUSDC</strong><em>releasable now</em></div></div>'
+    +(detail?'<p class="small">'+esc(detail)+'</p>':'')
+    +(missing.length?'<p class="small notice">Not readable this refresh: '+esc(missing.join(', '))+'</p>':'');
+}
+
+function amount(id){const v=$(id).value.trim();if(!/^[1-9]\d*$/.test(v)||BigInt(v)>1000000n)throw Error('Enter a positive whole demo-token amount (maximum 1,000,000).');return BigInt(v)*UNITS}
+function projectId(){const v=$t('chainProject').value.trim();if(!/^[1-9]\d*$/.test(v))throw Error('Enter a valid on-chain project ID.');return BigInt(v)}
+function milestoneId(){const v=$t('chainMilestone').value.trim();if(!/^(0|[1-9]\d*)$/.test(v))throw Error('Enter a valid milestone ID starting at 0.');return BigInt(v)}
+async function tx(label,fn){const t=await fn();log(label+' submitted',t.hash);const r=await t.wait();if(r.status!==1)throw Error(label+' reverted on-chain in block '+r.blockNumber+' — no receipt issued.');log(label+' confirmed',t.hash);return r}
+async function action(fn){if(busy)return;busy=true;try{await fn()}catch(e){fail(e)}finally{busy=false;for(const b of ['chainDonate','chainRefund','chainRelease'])if($(b))$(b).disabled=false}}
+
+// ---- on-chain receipts: built only from a mined, successful transaction ----
+function issueReceipt(kind,id,receipt,amountValue,who){
+  lastReceipt={
+    kind,project:String(id),amountDUSDC:fmt(amountValue),wallet:who,
+    escrowContract:escrowAddr(),tokenContract:tokenAddr(),
+    transactionHash:receipt.hash,blockNumber:Number(receipt.blockNumber),
+    confirmations:receipt.confirmations??'1+',status:receipt.status===1?'success':'reverted',
+    gasUsed:receipt.gasUsed?.toString()??'',explorer:EXPLORER+'/tx/'+receipt.hash,
+    recordedAt:new Date().toISOString(),
+    note:'Valueless Sepolia demonstration token. The confirmed transaction is the payment proof.'
+  };
+  receipts.unshift(lastReceipt);if(receipts.length>40)receipts.pop();
+  renderReceipts();showReceipt(lastReceipt);
+  try{localStorage.setItem(STORE+'.receipts',JSON.stringify(receipts))}catch{log('Receipts kept in this session only; browser storage unavailable.')}
+}
+let lastReceipt=null;
+function showReceipt(r){
+  lastReceipt=r;
+  $t('chainReceiptSummary').innerHTML='<div class="milestone"><div class="row"><b>'+esc(r.kind)+'</b><span class="tag blue">'+esc(r.amountDUSDC)+' dUSDC</span></div>'
+    +'<p class="hash">'+esc(r.transactionHash)+'</p>'
+    +'<p class="small">Block '+esc(r.blockNumber)+' · '+esc(r.confirmations)+' confirmation(s) · status '+esc(r.status)+' · gas used '+esc(r.gasUsed)+'</p>'
+    +'<p class="small">Wallet: '+esc(r.wallet)+'<br/>Escrow: '+esc(r.escrowContract)+'<br/>Token: '+esc(r.tokenContract)+'</p>'
+    +'<p class="small">Project #'+esc(r.project)+' · recorded '+esc(r.recordedAt)+'</p>'
+    +'<p class="small muted">'+esc(r.note)+'</p></div>'
+    +'<p class="small"><a href="'+esc(r.explorer)+'" target="_blank" rel="noopener noreferrer">Open this transaction on Sepolia Etherscan ↗</a></p>';
+  $t('chainReceiptModal').hidden=false;document.body.style.overflow='hidden';$t('closeChainReceipt').focus();
+}
+function closeReceipt(){$t('chainReceiptModal').hidden=true;document.body.style.overflow='';$t('chainDonate').focus()}
+function renderReceipts(){
+  if(!receipts.length){$t('receiptList').textContent='No on-chain receipts issued yet.';return}
+  $t('receiptList').innerHTML=receipts.map((r,i)=>'<div class="event"><span class="dot"></span><div><strong>'+esc(r.kind)+' · '+esc(r.amountDUSDC)+' dUSDC · project #'+esc(r.project)+'</strong><p>Block '+esc(r.blockNumber)+' · <a href="'+esc(r.explorer)+'" target="_blank" rel="noopener noreferrer">'+esc(String(r.transactionHash).slice(0,14))+'…</a> <button class="btn ghost" data-showreceipt="'+i+'" type="button">view</button></p></div></div>').join('');
+}
+
+// ---- audit ledger read from chain events ----
+async function syncAudit(){
+  const E=await loadEthers();const e=escrowAddr();
+  if(!E.isAddress(e))throw Error('Enter the escrow contract address first.');
+  const rp=provider||await getPublicProvider();
+  const source=provider?'connected wallet provider':'public RPC ('+SEPOLIA_RPC.replace(/^https:\/\//,'')+')';
+  const view=new E.Contract(e,escrowABI,rp);
+  const to=await rp.getBlockNumber();
+  const manual=$t('auditFrom').value.trim();
+  const from=manual===''?Math.max(0,to-4999):Number(manual);
+  if(!Number.isSafeInteger(from)||from<0)throw Error('Enter a from-block of 0 or more.');
+  if(from>to)throw Error('From block '+from+' is ahead of the current block '+to+'.');
+  $t('auditSummary').textContent='Scanning blocks '+from+'–'+to+' …';
+  let logs=[];
+  try{logs=await view.queryFilter(null,from,to)}
+  catch(err){
+    audit=[];$t('auditRows').innerHTML='<tr><td colspan="5">Event scan failed — see the note above.</td></tr>';
+    $t('auditSummary').innerHTML='<p class="notice">Could not read events from this node: '+esc(String(err?.shortMessage||err?.message||err).slice(0,240))+'. This is a read failure, not evidence of zero activity. Try a smaller block range or another Sepolia RPC.</p>';
+    return;
+  }
+  const parsed=[];let undecodable=0;
+  for(const l of logs){
+    try{const p=view.interface.parseLog(l);parsed.push({block:l.blockNumber,tx:l.transactionHash,name:p.name,args:p.args,logIndex:Number(l.logIndex??l.index??0)})}
+    catch{undecodable++}
+  }
+  parsed.sort((a,b)=>b.block-a.block||a.logIndex-b.logIndex);
+  audit=parsed;
+  $t('auditSummary').innerHTML='<p>Found <b>'+parsed.length+'</b> AidChain event(s) in <b>'+logs.length+'</b> log(s) across blocks <b>'+from+'–'+to+'</b> ('+(to-from+1).toLocaleString()+' blocks) via '+esc(source)+'. Undecodable logs: '+undecodable+'.</p><p class="small muted">Last sync '+new Date().toLocaleString()+'. A window starting at block '+from+' cannot show earlier activity — set an earlier from-block to cover history before it.</p>';
+  renderAudit();
+  log('Audit sync complete: '+parsed.length+' event(s) scanned from block '+from);
+}
+function renderAudit(){
+  const filter=$t('auditProjectFilter').value.trim();
+  const shown=filter===''?audit:audit.filter(p=>{const a=p.args||{};return String(a.projectId??a.id??'')===filter});
+  $t('auditRows').innerHTML=shown.length?shown.map(p=>{
+    const a=p.args||{};
+    const id=a.projectId??a.id??'—';
+    const raw=a.amount??(a.target!==undefined&&p.name==='ProjectCreated'?a.target:null);
+    const amt=raw==null?'—':fmt(BigInt(raw));
+    const actor=a.donor||a.ngo||a.reviewer||'—';
+    return '<tr><td>'+p.block+'<br><a class="small" href="'+EXPLORER+'/tx/'+p.tx+'" target="_blank" rel="noopener noreferrer">'+esc(p.tx.slice(0,12))+'…</a></td>'
+      +'<td><b>'+esc(p.name.replaceAll('_',' '))+'</b>'+(a.milestoneId!==undefined?'<br><span class="muted small">milestone '+esc(a.milestoneId)+'</span>':'')+'</td>'
+      +'<td>#'+esc(id)+'</td><td>'+esc(amt)+'</td><td class="hash">'+esc(typeof actor==='string'?short(actor):'—')+'</td></tr>';
+  }).join(''):'<tr><td colspan="5">No AidChain events matched this range'+(filter?' and project #'+esc(filter):'')+'.</td></tr>';
+}
+function csvCell(v){const s=String(v??'');return '"'+(s.startsWith('=')||s.startsWith('+')||s.startsWith('-')||s.startsWith('@')?"'"+s:s).replaceAll('"','""')+'"'}
+function exportAudit(){
+  if(!audit.length){log('Nothing to export — sync events from the chain first');return}
+  const head=['block','transactionHash','event','projectId','milestoneId','amountDUSDC','amountRaw','actor','evidenceHash'];
+  const lines=[head.join(',')].concat(audit.map(p=>{
+    const a=p.args||{};const raw=a.amount??a.target??'';
+    return [p.block,p.tx,p.name,(a.projectId??a.id??''),(a.milestoneId??''),raw===''?'':fmt(BigInt(raw)),raw,(a.donor||a.ngo||a.reviewer||''),(a.evidenceHash??'')].map(csvCell).join(',');
+  }));
+  download(lines.join('\r\n'),'text/csv;charset=utf-8','aidchain-sepolia-audit-'+Date.now()+'.csv');
+  log('Exported '+audit.length+' on-chain event(s) to CSV');
+}
+function download(content,type,name){
+  const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+function savePrefs(){try{localStorage.setItem(STORE,JSON.stringify({escrow:escrowAddr(),token:tokenAddr(),from:$t('auditFrom').value.trim()}))}catch{}}
+function loadPrefs(){try{return JSON.parse(localStorage.getItem(STORE))||{}}catch{return {}}}
+function initAddresses(){
+  const d=window.AIDCHAIN_DEPLOYMENT||{},p=loadPrefs();
+  if(p.escrow||p.token){
+    $t('escrowAddress').value=p.escrow||'';$t('tokenAddress').value=p.token||'';
+    if(p.from)$t('auditFrom').value=p.from;
+    $t('deploymentSource').textContent='Addresses: restored from this browser (your last manual entry)';
+  }else if(d.escrow||d.token){
+    $t('escrowAddress').value=d.escrow||'';$t('tokenAddress').value=d.token||'';
+    if(d.fromBlock)$t('auditFrom').value=String(d.fromBlock);
+    $t('deploymentSource').textContent='Addresses: auto-loaded from deployments/sepolia.config.js'
+      +(d.network?' · network '+d.network:'')+(d.escrowVerifiedOn?' · escrow verified on explorer '+d.escrowVerifiedOn:'');
+  }else $t('deploymentSource').textContent='Addresses: none loaded — deploy with the Remix guide or paste your own';
+  try{const r=JSON.parse(localStorage.getItem(STORE+'.receipts')||'[]');if(Array.isArray(r)){receipts=r;renderReceipts()}}catch{}
+}
+
+// ---- contract actions ----
+$t('connectWallet').onclick=()=>action(connect);
+$t('checkContracts').onclick=()=>action(validate);
+$t('refreshChain').onclick=()=>action(refresh);
+$t('escrowAddress').onchange=savePrefs;$t('tokenAddress').onchange=savePrefs;$t('auditFrom').onchange=savePrefs;
+$t('chainCreate').onclick=()=>action(async()=>{
+  await ready();const E=await loadEthers();
+  const reviewer=$t('chainReviewer').value.trim();
+  if(!E.isAddress(reviewer))throw Error('Enter a valid independent reviewer address.');
+  const target=amount('chainTarget');
+  if(target%4n!==0n)throw Error('Choose a target divisible by 4 for the 25/50/25 allocation.');
+  const id=await escrow.nextProjectId();
+  await tx('Create project #'+id,()=>escrow.createProject(reviewer,target,[target/4n,target/2n,target/4n]));
+  $t('chainProject').value=String(id);await refresh();
+});
+$t('chainMint').onclick=()=>action(async()=>{await ready();const who=await signer.getAddress();await tx('Mint demonstration tokens',()=>token.mint(who,amount('chainAmount')));await refresh()});
+$t('chainDonate').onclick=()=>action(async()=>{
+  await ready();const a=amount('chainAmount'),id=projectId();
+  const p=await escrow.projects(id);
+  if(!p.exists)throw Error('Project does not exist on Sepolia.');
+  if(p.raised+a>p.target)throw Error('Contribution exceeds project target.');
+  $t('chainDonate').disabled=true;
+  await tx('Approve dUSDC allowance',()=>token.approve(escrowAddr(),a));
+  const r=await tx('Donate to project #'+id,()=>escrow.donate(id,a));
+  await issueReceipt('Donation',id,r,a,await signer.getAddress());
+  await refresh();
+});
+$t('chainSubmit').onclick=()=>action(async()=>{
+  await ready();const E=await loadEthers(),ev=$t('chainEvidence').value.trim();
+  if(ev.length<8||ev.length>300)throw Error('Evidence reference must be 8–300 characters.');
+  await tx('Submit evidence hash',()=>escrow.submitEvidence(projectId(),milestoneId(),E.keccak256(E.toUtf8Bytes(ev))));
+  await refresh();
+});
+$t('chainApprove').onclick=()=>action(async()=>{await ready();await tx('Approve milestone',()=>escrow.approveMilestone(projectId(),milestoneId()));await refresh()});
+$t('chainReject').onclick=()=>action(async()=>{await ready();await tx('Reject milestone evidence',()=>escrow.rejectMilestone(projectId(),milestoneId()));await refresh()});
+$t('chainRelease').onclick=()=>action(async()=>{
+  await ready();const id=projectId(),m=milestoneId();
+  const ms=await escrow.milestones(id,m);
+  $t('chainRelease').disabled=true;
+  const r=await tx('Release approved milestone',()=>escrow.releaseFunds(id,m));
+  await issueReceipt('Milestone release',id,r,ms.amount,await signer.getAddress());
+  await refresh();
+});
+$t('chainReadState').onclick=()=>action(async()=>{
+  await ready();const id=projectId(),m=milestoneId();
+  const s=await escrow.milestoneStatus(id,m),p=await escrow.projects(id);
+  $t('chainState').innerHTML='<b>Project #'+id+' · milestone '+m+'</b><br/>Contract state: <b>'+esc(s.state)+'</b> · allocation '+fmt(s.amount)+' dUSDC<br/>Evidence hash: <span class="hash">'+esc(s.evidenceHash)+'</span><br/>Project: raised '+fmt(p.raised)+' · released '+fmt(p.released)+' · refunded '+fmt(p.refunded)+' · available '+fmt(await escrow.available(id))+' dUSDC';
+});
+$t('chainReadRefundable').onclick=()=>action(async()=>{
+  await ready();const id=projectId(),who=await signer.getAddress();
+  const r=await escrow.refundable(id,who);
+  $t('refundOut').innerHTML='Refundable for '+esc(short(who))+' on project #'+id+': <b>'+fmt(r)+' dUSDC</b> (contributed '+fmt(await escrow.contributed(id,who))+', already refunded '+fmt(await escrow.refunded(id,who))+')';
+});
+$t('chainRefund').onclick=()=>action(async()=>{
+  await ready();const id=projectId(),who=await signer.getAddress();
+  const cap=await escrow.refundable(id,who);
+  const manual=$t('refundAmount').value.trim();
+  if(manual!==''&&!/^[1-9]\d*$/.test(manual))throw Error('Enter a whole dUSDC amount, or leave blank for the maximum.');
+  const a=manual===''?cap:BigInt(manual)*UNITS;
+  if(cap<=0n)throw Error('Nothing refundable for this wallet on that project.');
+  if(a>cap)throw Error('Requested refund exceeds refundable ('+fmt(cap)+' dUSDC).');
+  $t('chainRefund').disabled=true;
+  const r=await tx('Claim donor refund',()=>escrow.refund(id,a));
+  await issueReceipt('Donor refund',id,r,a,who);
+  await refresh();
+});
+$t('clearChainLog').onclick=()=>{$t('chainLog').textContent='No transactions sent.'};
+$t('closeChainReceipt').onclick=closeReceipt;
+$t('chainReceiptModal').addEventListener('click',e=>{if(e.target===$t('chainReceiptModal'))closeReceipt()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$t('chainReceiptModal').hidden)closeReceipt()});
+$t('downloadChainReceipt').onclick=()=>{if(!lastReceipt)return;download(JSON.stringify(lastReceipt,null,2),'application/json','aidchain-receipt-'+String(lastReceipt.transactionHash).slice(0,10)+'.json')};
+$t('chainReceiptAudit').onclick=()=>{closeReceipt();document.querySelector('#nav button[data-view="audit"]')?.click()};
+$t('auditSync').onclick=()=>action(syncAudit);
+$t('auditExport').onclick=()=>action(exportAudit);
+$t('auditProjectFilter').onchange=renderAudit;
+$t('receiptList').addEventListener('click',e=>{const b=e.target.closest('button[data-showreceipt]');if(b)showReceipt(receipts[Number(b.dataset.showreceipt)])});
+
+window.ethereum?.on?.('accountsChanged',()=>{signer=null;escrow=null;token=null;chainReady=false;provider=null;setStatus('Wallet changed — reconnect and validate again');updateChip()});
+window.ethereum?.on?.('chainChanged',()=>{signer=null;escrow=null;token=null;chainReady=false;provider=null;setStatus('Network changed — reconnect and validate again');updateChip()});
+initAddresses();updateChip();
+</script></body></html>

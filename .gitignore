@@ -1,0 +1,31 @@
+# Foundry build artifacts
+contracts/cache/
+contracts/out/
+contracts/out-noopt/
+
+# Python cache
+.build/__pycache__/
+__pycache__/
+*.pyc
+
+# Local test deployment data (not needed for public demo)
+deployments/local-test.json
+
+# Environment files (never commit secrets)
+.env
+.env.local
+
+# Node modules (if any)
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
